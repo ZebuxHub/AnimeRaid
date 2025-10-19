@@ -257,11 +257,16 @@ function MacroSystem.SetupRecordingHooks()
                 remoteEvent.FireServer = function(self, ...)
                     local args = {...}
                     
+                    -- Debug: Print when skill is fired
+                    print(string.format("[Macro] Skill fired for hero: %s, Recording=%s, InFight=%s", 
+                        hero.Name, tostring(MacroSystem.IsRecording), tostring(MacroSystem.IsInFight())))
+                    
                     -- Call original FIRST (game works normally)
                     local result = originalFireServer(self, ...)
                     
                     -- Then record if we're recording and in fight
                     if MacroSystem.IsRecording and MacroSystem.IsInFight() then
+                        print(string.format("[Macro] Recording action for hero: %s", hero.Name))
                         task.defer(function()
                             MacroSystem.RecordAction(hero.Name, unpack(args))
                         end)
