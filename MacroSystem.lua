@@ -326,12 +326,13 @@ function MacroSystem.PlayMacro(macroData, loop, mode)
         local playCount = 0
         
         repeat
-            -- Wait for fight state
+            -- Wait for fight state (PAUSE, not stop)
             while MacroSystem.IsPlaying do
                 if MacroSystem.IsInFight() then
                     break
                 end
-                task.wait(0.5)
+                print("[Macro] Paused - waiting for fight state...")
+                task.wait(1)
             end
             
             if not MacroSystem.IsPlaying then
@@ -346,8 +347,19 @@ function MacroSystem.PlayMacro(macroData, loop, mode)
                 local startTime = MacroSystem.GetGameTime()
                 
                 for i, action in ipairs(macroData.actions) do
-                    if not MacroSystem.IsPlaying or not MacroSystem.IsInFight() then
-                        print("[Macro] Playback stopped (not in fight)")
+                    -- Check if still playing
+                    if not MacroSystem.IsPlaying then
+                        print("[Macro] Playback stopped by user")
+                        break
+                    end
+                    
+                    -- PAUSE if not in fight (don't break, just wait)
+                    while MacroSystem.IsPlaying and not MacroSystem.IsInFight() do
+                        print("[Macro] Paused - waiting for fight state...")
+                        task.wait(1)
+                    end
+                    
+                    if not MacroSystem.IsPlaying then
                         break
                     end
                     
@@ -369,8 +381,19 @@ function MacroSystem.PlayMacro(macroData, loop, mode)
                 local startWave = MacroSystem.LastWave
                 
                 for i, action in ipairs(macroData.actions) do
-                    if not MacroSystem.IsPlaying or not MacroSystem.IsInFight() then
-                        print("[Macro] Playback stopped (not in fight)")
+                    -- Check if still playing
+                    if not MacroSystem.IsPlaying then
+                        print("[Macro] Playback stopped by user")
+                        break
+                    end
+                    
+                    -- PAUSE if not in fight (don't break, just wait)
+                    while MacroSystem.IsPlaying and not MacroSystem.IsInFight() do
+                        print("[Macro] Paused - waiting for fight state...")
+                        task.wait(1)
+                    end
+                    
+                    if not MacroSystem.IsPlaying then
                         break
                     end
                     
@@ -386,7 +409,7 @@ function MacroSystem.PlayMacro(macroData, loop, mode)
                         task.wait(0.1)
                     end
                     
-                    if not MacroSystem.IsPlaying or not MacroSystem.IsInFight() then
+                    if not MacroSystem.IsPlaying then
                         break
                     end
                     
