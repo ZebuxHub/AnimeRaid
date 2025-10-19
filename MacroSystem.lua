@@ -247,49 +247,59 @@ function MacroSystem.SetupRecordingHooks()
             
             -- Hook each hero's RemoteEvent to capture SUCCESSFUL skill usage
             local function hookHero(hero)
-                local remoteEvent = hero:WaitForChild("RemoteEvent", 5)
-                if not remoteEvent then return end
-                
-                -- Store the original FireServer
-                local originalFireServer = remoteEvent.FireServer
-                
-                -- Replace FireServer with our hook
-                remoteEvent.FireServer = function(self, ...)
-                    local args = {...}
-                    
-                    -- Debug: Print when skill is fired
-                    print(string.format("[Macro] Skill fired for hero: %s, Recording=%s, InFight=%s", 
-                        hero.Name, tostring(MacroSystem.IsRecording), tostring(MacroSystem.IsInFight())))
-                    
-                    -- Call original FIRST (game works normally)
-                    local result = originalFireServer(self, ...)
-                    
-                    -- Then record if we're recording and in fight
-                    if MacroSystem.IsRecording and MacroSystem.IsInFight() then
-                        print(string.format("[Macro] Recording action for hero: %s", hero.Name))
-                        task.defer(function()
-                            MacroSystem.RecordAction(hero.Name, unpack(args))
-                        end)
+                task.spawn(function()
+                    -- Wait for RemoteEvent to exist
+                    local remoteEvent = hero:WaitForChild("RemoteEvent", 30)
+                    if not remoteEvent then 
+                        warn(string.format("[Macro] RemoteEvent not found for hero: %s", hero.Name))
+                        return 
                     end
                     
-                    return result
-                end
-                
-                print(string.format("[Macro] Hooked hero: %s", hero.Name))
+                    -- Wait a bit more to ensure it's fully loaded
+                    task.wait(0.5)
+                    
+                    -- Store the original FireServer
+                    local originalFireServer = remoteEvent.FireServer
+                    
+                    if not originalFireServer then
+                        warn(string.format("[Macro] FireServer not found for hero: %s", hero.Name))
+                        return
+                    end
+                    
+                    -- Replace FireServer with our hook
+                    remoteEvent.FireServer = function(self, ...)
+                        local args = {...}
+                        
+                        -- Debug: Print when skill is fired
+                        print(string.format("[Macro] Skill fired for hero: %s, Recording=%s, InFight=%s", 
+                            hero.Name, tostring(MacroSystem.IsRecording), tostring(MacroSystem.IsInFight())))
+                        
+                        -- Call original FIRST (game works normally)
+                        local result = originalFireServer(self, ...)
+                        
+                        -- Then record if we're recording and in fight
+                        if MacroSystem.IsRecording and MacroSystem.IsInFight() then
+                            print(string.format("[Macro] Recording action for hero: %s", hero.Name))
+                            task.defer(function()
+                                MacroSystem.RecordAction(hero.Name, unpack(args))
+                            end)
+                        end
+                        
+                        return result
+                    end
+                    
+                    print(string.format("[Macro] Hooked hero: %s", hero.Name))
+                end)
             end
             
             -- Hook existing heroes
             for _, hero in ipairs(heroFolder:GetChildren()) do
-                task.spawn(function()
-                    hookHero(hero)
-                end)
+                hookHero(hero)
             end
             
             -- Hook new heroes when they spawn
             heroFolder.ChildAdded:Connect(function(hero)
-                task.spawn(function()
-                    hookHero(hero)
-                end)
+                hookHero(hero)
             end)
             
             print("[Macro] RemoteEvent hooks setup complete! Recording will not block game actions.")
