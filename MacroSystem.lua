@@ -19,10 +19,26 @@ MacroSystem.IsPlaying = false
 MacroSystem.CurrentMacro = {}
 MacroSystem.RecordStartTime = 0
 MacroSystem.PlaybackThread = nil
-MacroSystem.RemoteConnection = nil
+MacroSystem.PlaybackMode = "Time" -- "Time" or "Wave"
+MacroSystem.LastWave = 0
 
 --// Config
 MacroSystem.MacroFolderPath = "Zebux/Anime Raid/Macros"
+
+-- Map name mappings
+MacroSystem.MapNames = {
+    ["1"] = "Leveling Path",
+    ["2"] = "Snow Village",
+    ["3"] = "Infinite Castle",
+    ["4"] = "Jujutsu School",
+    ["5"] = "Graveyard of the End"
+}
+
+MacroSystem.ModeNames = {
+    ["1"] = "Normal",
+    ["2"] = "Hard",
+    ["3"] = "Infinite"
+}
 
 -- Create macro folder
 if not isfolder("Zebux/Anime Raid") then
@@ -148,10 +164,50 @@ end
 -- Get map display name
 function MacroSystem.GetMapDisplayName()
     local mapData = MacroSystem.GetCurrentMapID()
-    if not mapData then return "Unknown Map" end
     
-    return string.format("Map: %s | Type: %s | Tag: %s", 
-        mapData.MapID, mapData.MapType, mapData.MapOnlyTag)
+    if not mapData then
+        return "Not in game"
+    end
+    
+    local mapName = MacroSystem.MapNames[tostring(mapData.MapID)] or "Unknown"
+    local modeName = MacroSystem.ModeNames[tostring(mapData.MapType)] or "Unknown"
+    
+    -- For infinite mode, chapter is always 1
+    if mapData.MapType == "3" then
+        return string.format("%s | Infinite", mapName)
+    else
+        return string.format("%s | Ch.%s | %s", mapName, mapData.MapOnlyTag or "?", modeName)
+    end
+end
+
+-- Check if game is in fight state
+function MacroSystem.IsInFight()
+    local success, isFighting = pcall(function()
+        local gameData = workspace:FindFirstChild("游戏数据")
+        if not gameData then return false end
+        
+        local gameState = gameData:FindFirstChild("GameState")
+        if not gameState then return false end
+        
+        return gameState.Value == "Fight"
+    end)
+    
+    return success and isFighting or false
+end
+
+-- Get current wave
+function MacroSystem.GetCurrentWave()
+    local success, wave = pcall(function()
+        local gameData = workspace:FindFirstChild("游戏数据")
+        if not gameData then return 0 end
+        
+        local nowWave = gameData:FindFirstChild("NowWave")
+        if not nowWave then return 0 end
+        
+        return nowWave.Value
+    end)
+    
+    return success and wave or 0
 end
 
 --[[
@@ -181,71 +237,41 @@ function MacroSystem.StartRecording()
     MacroSystem.CurrentMacro = {
         actions = {},
         startTime = MacroSystem.GetGameTime(),
+        startWave = MacroSystem.GetCurrentWave(),
         version = 1,
-        mapData = mapData -- Store map info
+        mapData = mapData
     }
     MacroSystem.RecordStartTime = MacroSystem.GetGameTime()
     
-    print(string.format("[Macro] Recording started at game time: %.2f", MacroSystem.RecordStartTime))
+    print(string.format("[Macro] Recording started at game time: %.2f, wave: %d", 
+        MacroSystem.RecordStartTime, MacroSystem.CurrentMacro.startWave))
     if mapData then
-        print(string.format("[Macro] Map: %s", mapData.FullID))
-    end
-    
-    -- Hook into RemoteEvent
-    local success = pcall(function()
-        local gameData = workspace:WaitForChild("游戏数据", 5)
-        if not gameData then return end
-        
-        local heroFolder = gameData:WaitForChild("英雄", 5)
-        if not heroFolder then return end
-        
-        -- Monitor all hero RemoteEvents
-        local function hookHero(hero)
-            local remoteEvent = hero:FindFirstChild("RemoteEvent")
-            if remoteEvent then
-                -- Store original namecall
-                local oldNamecall
-                oldNamecall = hookmetamethod(game, "__namecall", function(self, ...)
-                    local method = getnamecallmethod()
-                    local args = {...}
-                    
-                    if method == "FireServer" and self == remoteEvent and MacroSystem.IsRecording then
-                        local currentTime = MacroSystem.GetGameTime()
-                        local relativeTime = currentTime - MacroSystem.RecordStartTime
-                        
-                        -- Record the action
-                        local action = {
-                            time = relativeTime,
-                            heroId = hero.Name,
-                            args = args
-                        }
-                        
-                        table.insert(MacroSystem.CurrentMacro.actions, action)
-                        print(string.format("[Macro] Recorded action #%d at %.2fs: Hero=%s", 
-                            #MacroSystem.CurrentMacro.actions, relativeTime, hero.Name))
-                    end
-                    
-                    return oldNamecall(self, ...)
-                end)
-            end
-        end
-        
-        -- Hook existing heroes
-        for _, hero in ipairs(heroFolder:GetChildren()) do
-            hookHero(hero)
-        end
-        
-        -- Hook new heroes
-        heroFolder.ChildAdded:Connect(hookHero)
-    end)
-    
-    if not success then
-        warn("[Macro] Failed to hook RemoteEvents")
-        MacroSystem.IsRecording = false
-        return false
+        print(string.format("[Macro] Map: %s", MacroSystem.GetMapDisplayName()))
     end
     
     return true
+end
+
+-- Record an action (called by hooked RemoteEvent)
+function MacroSystem.RecordAction(heroId, ...)
+    if not MacroSystem.IsRecording then return end
+    
+    local currentTime = MacroSystem.GetGameTime()
+    local currentWave = MacroSystem.GetCurrentWave()
+    local relativeTime = currentTime - MacroSystem.RecordStartTime
+    local relativeWave = currentWave - MacroSystem.CurrentMacro.startWave
+    
+    local action = {
+        time = relativeTime,
+        wave = currentWave,
+        relativeWave = relativeWave,
+        heroId = heroId,
+        args = {...}
+    }
+    
+    table.insert(MacroSystem.CurrentMacro.actions, action)
+    print(string.format("[Macro] Recorded action #%d at %.2fs (Wave %d): Hero=%s", 
+        #MacroSystem.CurrentMacro.actions, relativeTime, currentWave, heroId))
 end
 
 -- Stop recording
@@ -271,8 +297,14 @@ end
     ========================================
 --]]
 
+-- Reset playback state (call when game restarts)
+function MacroSystem.ResetPlayback()
+    MacroSystem.LastWave = 0
+    print("[Macro] Playback state reset")
+end
+
 -- Play macro
-function MacroSystem.PlayMacro(macroData, loop)
+function MacroSystem.PlayMacro(macroData, loop, mode)
     if MacroSystem.IsPlaying then
         warn("[Macro] Already playing a macro!")
         return false
@@ -284,65 +316,106 @@ function MacroSystem.PlayMacro(macroData, loop)
     end
     
     MacroSystem.IsPlaying = true
-    print(string.format("[Macro] Starting playback (%d actions, loop=%s)", #macroData.actions, tostring(loop)))
+    MacroSystem.PlaybackMode = mode or "Time"
+    MacroSystem.LastWave = 0
+    
+    print(string.format("[Macro] Starting playback (%d actions, loop=%s, mode=%s)", 
+        #macroData.actions, tostring(loop), MacroSystem.PlaybackMode))
     
     MacroSystem.PlaybackThread = task.spawn(function()
         local playCount = 0
         
         repeat
+            -- Wait for fight state
+            while MacroSystem.IsPlaying do
+                if MacroSystem.IsInFight() then
+                    break
+                end
+                task.wait(0.5)
+            end
+            
+            if not MacroSystem.IsPlaying then
+                break
+            end
+            
             playCount = playCount + 1
-            print(string.format("[Macro] Playback iteration #%d", playCount))
+            print(string.format("[Macro] Playback iteration #%d (Mode: %s)", playCount, MacroSystem.PlaybackMode))
             
-            local startTime = MacroSystem.GetGameTime()
-            
-            for i, action in ipairs(macroData.actions) do
-                if not MacroSystem.IsPlaying then
-                    print("[Macro] Playback stopped by user")
-                    return
-                end
+            if MacroSystem.PlaybackMode == "Time" then
+                -- Time-based playback
+                local startTime = MacroSystem.GetGameTime()
                 
-                -- Wait until the action's time
-                local currentTime = MacroSystem.GetGameTime()
-                local elapsedTime = currentTime - startTime
-                local waitTime = action.time - elapsedTime
-                
-                if waitTime > 0 then
-                    task.wait(waitTime)
-                end
-                
-                -- Fire the skill
-                local success = pcall(function()
-                    local gameData = workspace:FindFirstChild("游戏数据")
-                    if not gameData then return end
-                    
-                    local heroFolder = gameData:FindFirstChild("英雄")
-                    if not heroFolder then return end
-                    
-                    local hero = heroFolder:FindFirstChild(action.heroId)
-                    if not hero then
-                        warn(string.format("[Macro] Hero not found: %s", action.heroId))
-                        return
+                for i, action in ipairs(macroData.actions) do
+                    if not MacroSystem.IsPlaying or not MacroSystem.IsInFight() then
+                        print("[Macro] Playback stopped (not in fight)")
+                        break
                     end
                     
-                    local remoteEvent = hero:FindFirstChild("RemoteEvent")
-                    if not remoteEvent then
-                        warn(string.format("[Macro] RemoteEvent not found for hero: %s", action.heroId))
-                        return
+                    -- Wait until the action's time
+                    local currentTime = MacroSystem.GetGameTime()
+                    local elapsedTime = currentTime - startTime
+                    local waitTime = action.time - elapsedTime
+                    
+                    if waitTime > 0 then
+                        task.wait(waitTime)
                     end
                     
-                    remoteEvent:FireServer(unpack(action.args))
-                    print(string.format("[Macro] Fired skill for hero: %s (action %d/%d)", 
-                        action.heroId, i, #macroData.actions))
-                end)
+                    -- Fire the skill
+                    MacroSystem.FireAction(action, i, #macroData.actions)
+                end
+            else
+                -- Wave-based playback
+                MacroSystem.LastWave = MacroSystem.GetCurrentWave()
+                local startWave = MacroSystem.LastWave
                 
-                if not success then
-                    warn(string.format("[Macro] Failed to fire action #%d", i))
+                for i, action in ipairs(macroData.actions) do
+                    if not MacroSystem.IsPlaying or not MacroSystem.IsInFight() then
+                        print("[Macro] Playback stopped (not in fight)")
+                        break
+                    end
+                    
+                    -- Wait until the action's wave
+                    while MacroSystem.IsPlaying and MacroSystem.IsInFight() do
+                        local currentWave = MacroSystem.GetCurrentWave()
+                        local relativeWave = currentWave - startWave
+                        
+                        if relativeWave >= action.relativeWave then
+                            break
+                        end
+                        
+                        task.wait(0.1)
+                    end
+                    
+                    if not MacroSystem.IsPlaying or not MacroSystem.IsInFight() then
+                        break
+                    end
+                    
+                    -- Fire the skill
+                    MacroSystem.FireAction(action, i, #macroData.actions)
+                    task.wait(0.1) -- Small delay between actions
                 end
             end
             
-            -- Wait a bit before looping
+            -- Wait for fight to end before looping
             if loop and MacroSystem.IsPlaying then
-                task.wait(1)
+                print("[Macro] Waiting for fight to end before next loop...")
+                while MacroSystem.IsPlaying do
+                    if not MacroSystem.IsInFight() then
+                        break
+                    end
+                    task.wait(0.5)
+                end
+                
+                -- Wait for next fight to start
+                print("[Macro] Waiting for next fight to start...")
+                while MacroSystem.IsPlaying do
+                    if MacroSystem.IsInFight() then
+                        MacroSystem.ResetPlayback()
+                        task.wait(2) -- Give game time to load
+                        break
+                    end
+                    task.wait(0.5)
+                end
             end
             
         until not loop or not MacroSystem.IsPlaying
@@ -352,6 +425,37 @@ function MacroSystem.PlayMacro(macroData, loop)
     end)
     
     return true
+end
+
+-- Fire a single action
+function MacroSystem.FireAction(action, index, total)
+    local success = pcall(function()
+        local gameData = workspace:FindFirstChild("游戏数据")
+        if not gameData then return end
+        
+        local heroFolder = gameData:FindFirstChild("英雄")
+        if not heroFolder then return end
+        
+        local hero = heroFolder:FindFirstChild(action.heroId)
+        if not hero then
+            warn(string.format("[Macro] Hero not found: %s", action.heroId))
+            return
+        end
+        
+        local remoteEvent = hero:FindFirstChild("RemoteEvent")
+        if not remoteEvent then
+            warn(string.format("[Macro] RemoteEvent not found for hero: %s", action.heroId))
+            return
+        end
+        
+        remoteEvent:FireServer(unpack(action.args))
+        print(string.format("[Macro] Fired skill for hero: %s (action %d/%d)", 
+            action.heroId, index, total))
+    end)
+    
+    if not success then
+        warn(string.format("[Macro] Failed to fire action #%d", index))
+    end
 end
 
 -- Stop playback
@@ -378,25 +482,23 @@ end
 --]]
 
 -- Get macro for current map
-function MacroSystem.GetMacroForCurrentMap(macroMap)
-    local mapData = MacroSystem.GetCurrentMapID()
-    if not mapData then return nil end
-    
-    -- Try exact match first
-    local macroName = macroMap[mapData.FullID]
+function MacroSystem.GetMacroForMap(macroMap, mapID, mapType, mapTag)
+    -- Try exact match first (Map_Type_Tag)
+    local fullID = string.format("%s_%s_%s", mapID, mapType, mapTag)
+    local macroName = macroMap[fullID]
     if macroName then
         return macroName
     end
     
-    -- Try without tag
-    local simpleID = string.format("%s_%s", mapData.MapID, mapData.MapType)
+    -- Try without tag (Map_Type)
+    local simpleID = string.format("%s_%s", mapID, mapType)
     macroName = macroMap[simpleID]
     if macroName then
         return macroName
     end
     
     -- Try just MapID
-    macroName = macroMap[mapData.MapID]
+    macroName = macroMap[mapID]
     if macroName then
         return macroName
     end
@@ -404,28 +506,34 @@ function MacroSystem.GetMacroForCurrentMap(macroMap)
     return nil
 end
 
--- Assign macro to current map
-function MacroSystem.AssignMacroToCurrentMap(macroName, macroMap)
-    local mapData = MacroSystem.GetCurrentMapID()
-    if not mapData then
-        warn("[Macro] Cannot detect current map!")
-        return false
-    end
-    
-    macroMap[mapData.FullID] = macroName
-    print(string.format("[Macro] Assigned '%s' to map: %s", macroName, mapData.FullID))
-    return true
+-- Create assignment key for display
+function MacroSystem.CreateAssignmentKey(mapID, mapType, mapTag)
+    return string.format("%s_%s_%s", mapID, mapType, mapTag)
 end
 
--- Remove macro assignment for current map
-function MacroSystem.RemoveMacroFromCurrentMap(macroMap)
-    local mapData = MacroSystem.GetCurrentMapID()
-    if not mapData then return false end
+-- Format assignment key for display
+function MacroSystem.FormatAssignmentDisplay(key)
+    local parts = {}
+    for part in string.gmatch(key, "[^_]+") do
+        table.insert(parts, part)
+    end
     
-    macroMap[mapData.FullID] = nil
-    print(string.format("[Macro] Removed macro assignment for map: %s", mapData.FullID))
-    return true
+    if #parts < 2 then
+        return key
+    end
+    
+    local mapID = parts[1]
+    local mapType = parts[2]
+    local mapTag = parts[3] or "?"
+    
+    local mapName = MacroSystem.MapNames[mapID] or "Unknown"
+    local modeName = MacroSystem.ModeNames[mapType] or "Unknown"
+    
+    if mapType == "3" then
+        return string.format("%s | Infinite", mapName)
+    else
+        return string.format("%s | Ch.%s | %s", mapName, mapTag, modeName)
+    end
 end
 
 return MacroSystem
-
